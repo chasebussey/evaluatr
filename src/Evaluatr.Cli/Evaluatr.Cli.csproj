@@ -6,6 +6,13 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <AssemblyName>evaluatr</AssemblyName>
+
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>evaluatr</ToolCommandName>
+        <PackageId>Evaluatr.Cli</PackageId>
+        <Version>0.0.1-alpha</Version>
+        <Description>CLI tool for running eval suites.</Description>
+
     </PropertyGroup>
 
     <ItemGroup>
@@ -18,7 +25,7 @@
     </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Include="System.CommandLine" Version="2.0.11" />
+        <PackageReference Include="System.CommandLine" Version="2.0.11" />
     </ItemGroup>
 
 </Project>
