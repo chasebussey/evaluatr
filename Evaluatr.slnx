@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="src/Evaluatr.Core/Evaluatr.Core.csproj" />
+  <Project Path="src/Evaluatr.Copilot/Evaluatr.Copilot.csproj" />
+  <Project Path="src/Evaluatr.Cli/Evaluatr.Cli.csproj" />
+  <Project Path="tests/Evaluatr.Core.UnitTests/Evaluatr.Core.UnitTests.csproj" />
+  <Project Path="tests/Evaluatr.Copilot.UnitTests/Evaluatr.Copilot.UnitTests.csproj" />
+  <Project Path="tests/Evaluatr.Cli.UnitTests/Evaluatr.Cli.UnitTests.csproj" />
+</Solution>

@@ -1,0 +1,19 @@
+name: "test eval suite"
+harness: "copilot"
+evals:
+  - name: "test eval task"
+    description: "this is a test eval task, it won't actually do anything"
+    repo: "test/repo"
+    baseCommit: "reallyShouldBeAHash"
+    prompt: |
+      I think this is still how you define a multiline string.
+      
+      This should be parsed correctly.
+    agent: "default"
+    graders:
+      - name: "skill check"
+        type: "assertion"
+        assertion: "sample assertion"
+      - name: "rubric checker"
+        type: "rubric"
+        rubric: "Verify the output yadda yadda"
