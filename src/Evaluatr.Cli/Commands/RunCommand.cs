@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Evaluatr.Core.Evals;
+using Evaluatr.Core.Graders;
 using Evaluatr.Core.Runner;
 
 namespace Evaluatr.Cli.Commands;
@@ -87,7 +88,16 @@ public static class RunCommand
 
         var suitePath = targetDir ?? targetFile;
         output.WriteVerbose($"Loading suites from {suitePath}");
-        var evalSuites = LoadSuites(suitePath!);
+        List<EvalSuite> evalSuites;
+        try
+        {
+            evalSuites = LoadSuites(suitePath!);
+        }
+        catch (EvalSuiteValidationException ex)
+        {
+            output.WriteError(ex.Message);
+            return 1;
+        }
 
         output.WriteVerbose($"Loaded {evalSuites.Count} eval suite(s).");
 
@@ -142,6 +152,7 @@ public static class RunCommand
             AllowDirty = allowDirty,
         };
 
+        var hasBlockingResult = false;
         foreach (var (suite, mode, runner) in planned)
         {
             output.WriteLine($"Suite: {suite.Name} ({mode})");
@@ -150,10 +161,11 @@ public static class RunCommand
             {
                 var report = await runner.RunAsync(eval, options, cancellationToken);
                 WriteReport(output, report);
+                hasBlockingResult |= report.Verdict != EvalVerdict.Pass;
             }
         }
 
-        return 0;
+        return hasBlockingResult ? 1 : 0;
     }
 
     /// <summary>
@@ -210,7 +222,7 @@ public static class RunCommand
     /// <summary>Writes a human-readable summary of a single eval report.</summary>
     private static void WriteReport(ConsoleWriter output, EvalReport report)
     {
-        output.WriteLine($"  Eval: {report.EvalName} — {report.Status}");
+        output.WriteLine($"  Eval: {report.EvalName} — {report.Status} / {report.Verdict.ToString().ToUpperInvariant()}");
 
         if (report.StatusDetail is not null)
         {
@@ -224,8 +236,10 @@ public static class RunCommand
 
         foreach (var grade in report.GradeResults)
         {
-            var verdict = grade.Passed ? "PASS" : "FAIL";
-            output.WriteLine($"    [{verdict}] {grade.Name} (score: {grade.Score})");
+            var outcome = grade.Outcome.ToString().ToUpperInvariant();
+            var score = grade is RubricGradeResult { Score: { } value } ? $" (score: {value})" : "";
+            output.WriteLine($"    [{outcome}] {grade.Name}{score}");
+            output.WriteLine($"      {grade.Detail}");
         }
 
         var usage = report.UsageSummary;

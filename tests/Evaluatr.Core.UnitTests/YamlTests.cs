@@ -40,7 +40,8 @@ public class YamlTests
         assertionGrader.Name.Should().Be("skill check");
         assertionGrader.Description.Should().BeNull();
         assertionGrader.Type.Should().Be(GraderType.Assertion);
-        assertionGrader.Assertion.Should().Be("sample assertion");
+        assertionGrader.Check.Should().Be(new TranscriptContainsCheck("sample assertion"));
+        assertionGrader.Required.Should().BeFalse();
 
         var rubricGrader = graders[1].Should().BeOfType<RubricGrader>().Subject;
         rubricGrader.Name.Should().Be("rubric checker");

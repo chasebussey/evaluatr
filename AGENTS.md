@@ -7,9 +7,9 @@ Evaluatr is an early-alpha .NET 10 CLI for running YAML eval suites against agen
 Current behavior:
 - `Evaluatr.Core` provides typed suite/grader models, YAML parsing, mode validation, and Git workspace utilities.
 - `Evaluatr.Cli` loads suites, resolves harnesses, handles dirty-tree confirmation, and runs evals sequentially with console reports.
-- `Evaluatr.Copilot` drives SDK sessions in temporary clones, detached worktrees, or the live workspace and collects transcripts and token usage.
-- Assertion and rubric grading are placeholders: both always return `Passed = true` without evaluating results. Do not treat PASS output as task validation.
-- Tests cover parsing, validation, CLI behavior, and Git workspace handling; successful authenticated Copilot execution is not covered.
+- `Evaluatr.Copilot` drives SDK sessions in temporary clones, detached worktrees, or the live workspace and collects transcripts, tool names at execution start, and token usage.
+- Deterministic assertion grading supports `file-exists`, `file-contains`, `transcript-contains`, and `tool-called`. Rubric evaluation is unimplemented and reports ERROR.
+- Tests cover parsing, validation, assertion grading/policy, tool-event collection, CLI behavior, and Git workspace handling; successful authenticated Copilot execution is not covered.
 
 ## Repository Layout
 
@@ -21,11 +21,11 @@ Current behavior:
 - `src/Evaluatr.Copilot/`
   - Copilot SDK execution and grader-session adapter
 - `tests/Evaluatr.Core.UnitTests/`
-  - Unit tests for YAML parsing, validation, and Git workspace/worktree behavior
+  - Unit tests for YAML parsing, validation, assertion checks, grading policy, and Git workspace/worktree behavior
 - `tests/Evaluatr.Cli.UnitTests/`
   - Unit tests for CLI behavior
 - `tests/Evaluatr.Copilot.UnitTests/`
-  - Runner workspace-guard tests, not successful end-to-end Copilot execution
+  - Runner workspace-guard and tool-event collection tests, not successful end-to-end Copilot execution
 - `tests/testdata/sample.yaml`
   - Canonical sample eval suite used by tests
 - `.evals/`
@@ -54,7 +54,8 @@ Run these from the repository root.
 - Eval suites live in `Evaluatr.Core.Evals`.
 - Graders live in `Evaluatr.Core.Graders`.
 - YAML parsing is centralized in `EvalSuiteParser`.
-- Grader polymorphism is currently driven by the YAML `type` field.
+- YAML `type` selects the grader; assertion `check` selects a typed `AssertionCheck`.
+- Parser-only wire definitions map flat YAML to domain types; unknown/duplicate keys and irrelevant check fields are rejected. Legacy `assertion:` definitions are rejected with a migration message.
 
 ### CLI
 - `Program.cs` builds and invokes a `System.CommandLine` root command.
@@ -66,7 +67,13 @@ Run these from the repository root.
 - Core's `IEvalRunner` and `EvalRunOptions` keep the runner boundary harness-neutral.
 - `CopilotEvalRunner` selects a temporary repository clone, detached local worktree, or live working directory per eval.
 - Copilot tool permissions are auto-approved. Temporary checkouts are not security sandboxes; prompts and repositories must be trusted.
-- Assertion graders are orchestrated before rubric graders. The rubric session infrastructure exists, but neither grader currently evaluates results.
+- Core's `GradingRunner` owns stable ordering: required assertions, optional assertions, then rubrics.
+- `required` defaults to false. Required FAIL/ERROR fails the eval and marks all remaining graders SKIPPED; optional FAIL/ERROR is non-blocking. Subsequent evals continue after grading failures.
+- Assertions have PASS/FAIL/ERROR/SKIPPED outcomes and explanations, never scores. Only `RubricGradeResult` carries an optional score. Unimplemented rubrics return ERROR rather than a placeholder PASS.
+- `EvalReport.Verdict` (`EvalVerdict`) is separate from `EvalRunStatus`. Required assertion FAIL/ERROR and rubric FAIL give Fail; rubric ERROR gives Error. Optional-only failures or no graders can still yield Pass.
+- CLI exits nonzero when any eval verdict is Fail/Error; `Program.cs` propagates the command exit code.
+- File checks enforce workspace-relative paths and inspect symlink targets at runtime. This does not provide race-proof containment against concurrent filesystem mutation.
+- Rubric session infrastructure remains harness-owned; auth fail-fast/circuit breaking is a follow-up, not grading policy.
 - Reports are console-only; there is no persisted or machine-readable report output.
 
 ## Working Guidelines
@@ -83,8 +90,9 @@ Run these from the repository root.
 
 ### When adding grader types
 - Add the new grader model under `src/Evaluatr.Core/Graders/`.
-- Register the discriminator in `EvalSuiteParser`.
-- Add parser tests proving the new type deserializes correctly.
+- Add the wire mapping and field validation in `EvalSuiteParser`.
+- For a new assertion check, add a typed `AssertionCheck` with configuration validation and deterministic evaluation.
+- Add parser, execution, error/cancellation, and policy tests as applicable.
 
 ## Coding Conventions
 
@@ -121,3 +129,5 @@ If the change is CLI-specific, make sure the relevant CLI command is also exerci
 - Suite mode validation: `src/Evaluatr.Core/Evals/EvalSuiteValidator.cs`
 - YAML parsing: `src/Evaluatr.Core/Evals/EvalSuiteParser.cs`
 - Schema models: `src/Evaluatr.Core/Evals/Types.cs`, `src/Evaluatr.Core/Graders/Types.cs`
+- Assertion checks and workspace boundary: `src/Evaluatr.Core/Graders/AssertionCheck.cs`, `src/Evaluatr.Core/Graders/WorkspaceFile.cs`
+- Grading order and gating: `src/Evaluatr.Core/Graders/GradingRunner.cs`

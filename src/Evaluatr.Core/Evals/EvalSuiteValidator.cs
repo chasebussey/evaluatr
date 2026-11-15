@@ -1,3 +1,5 @@
+using Evaluatr.Core.Graders;
+
 namespace Evaluatr.Core.Evals;
 
 /// <summary>
@@ -69,6 +71,14 @@ public static class EvalSuiteValidator
         }
 
         var evals = suite.Evals;
+        foreach (var eval in evals ?? [])
+        {
+            foreach (var assertion in eval.Graders.OfType<AssertionGrader>())
+            {
+                assertion.Check.Validate();
+            }
+        }
+
 
         // An empty suite is a no-op; treat it as a live workspace so it never
         // throws and needs no repo/commit context.

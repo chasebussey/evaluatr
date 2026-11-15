@@ -2,131 +2,148 @@ using Evaluatr.Core.Evals;
 
 namespace Evaluatr.Core.Graders;
 
-/// <summary>
-/// A harness-neutral session used by graders that reason with an LLM (e.g. rubric
-/// grading). Each harness supplies its own implementation; Core stays free of any
-/// agent SDK. The surface is intentionally minimal and should grow deliberately as
-/// rubric grading is implemented.
-/// </summary>
+/// <summary>A harness-neutral session used by LLM-backed graders.</summary>
 public interface IGraderSession : IAsyncDisposable
 {
-    /// <summary>Sends <paramref name="prompt"/> to the session and returns its reply.</summary>
+    /// <summary>Sends a prompt and returns the reply.</summary>
     Task<string> AskAsync(string prompt, CancellationToken cancellationToken = default);
 
-    /// <summary>The token usage this session has accumulated.</summary>
+    /// <summary>The session's accumulated token usage.</summary>
     UsageSummary Usage { get; }
 }
 
-/// <summary>
-/// Grades an <see cref="EvalResult"/> and reports whether it passed, an optional
-/// score, and any token usage the grader itself consumed.
-/// </summary>
+/// <summary>A named check or rubric applied to an agent's result.</summary>
 public interface IGrader
 {
     /// <summary>The grader's display name.</summary>
-    public string Name { get; }
+    string Name { get; }
 
-    /// <summary>Optional human-readable description of what the grader checks.</summary>
-    public string? Description { get; }
+    /// <summary>Optional description of what the grader checks.</summary>
+    string? Description { get; }
 
-    /// <summary>The kind of grader, which drives execution ordering and isolation.</summary>
-    public GraderType Type { get; }
+    /// <summary>The kind of grader.</summary>
+    GraderType Type { get; }
 
-    /// <summary>
-    /// Grades the eval result described by <paramref name="context"/>.
-    /// </summary>
-    /// <param name="context">
-    /// The grading context, carrying the eval result, the working directory the
-    /// eval ran in, and (for graders that need an LLM) a factory that yields a
-    /// dedicated harness session.
-    /// </param>
-    /// <param name="cancellationToken">Token used to cancel grading.</param>
+    /// <summary>Grades the supplied execution result.</summary>
     Task<GradeResult> GradeAsync(GradingContext context, CancellationToken cancellationToken = default);
 }
 
+/// <summary>The supported grader categories.</summary>
 public enum GraderType
 {
     Assertion,
-    Rubric
+    Rubric,
 }
 
-/// <summary>
-/// Everything a grader needs to evaluate an eval result. The runner decides how
-/// each member is supplied, which is what lets rubric graders transparently run
-/// in a dedicated harness instance.
-/// </summary>
+/// <summary>The result of evaluating a grader, distinct from execution completion.</summary>
+public enum GradeOutcome
+{
+    /// <summary>The check matched.</summary>
+    Pass,
+    /// <summary>The check ran but did not match.</summary>
+    Fail,
+    /// <summary>The grader could not evaluate the result.</summary>
+    Error,
+    /// <summary>A required assertion blocked this grader.</summary>
+    Skipped,
+}
+
+/// <summary>Everything a grader needs to inspect an eval's output.</summary>
 public sealed record GradingContext
 {
-    /// <summary>The result produced by executing the eval.</summary>
+    /// <summary>The raw agent execution result.</summary>
     public required EvalResult EvalResult { get; init; }
 
-    /// <summary>The temp working directory the eval executed in.</summary>
+    /// <summary>The workspace in which the eval ran.</summary>
     public required string WorkingDirectory { get; init; }
 
-    /// <summary>
-    /// Lazily creates a harness-neutral <see cref="IGraderSession"/> for graders
-    /// that reason with an LLM. For rubric graders this is backed by a dedicated
-    /// harness instance separate from the one used to execute the eval.
-    /// <see langword="null"/> for assertion grading.
-    /// </summary>
+    /// <summary>Creates an isolated harness session for rubric grading.</summary>
     public Func<CancellationToken, Task<IGraderSession>>? CreateGraderSessionAsync { get; init; }
 }
 
+/// <summary>A grader's outcome and diagnostic explanation. Assertions have no score.</summary>
 public record GradeResult
 {
+    /// <summary>The grader's display name.</summary>
     public required string Name { get; init; }
-    public bool Passed { get; init; }
-    public decimal Score { get; init; }
 
-    /// <summary>
-    /// The grader's own token usage. Zero for graders that do not call an LLM
-    /// (e.g. assertion graders).
-    /// </summary>
+    /// <summary>Whether the grader matched, failed, errored, or was skipped.</summary>
+    public required GradeOutcome Outcome { get; init; }
+
+    /// <summary>A human-readable explanation, including skip reasons.</summary>
+    public required string Detail { get; init; }
+
+    /// <summary>The grader's own token usage.</summary>
     public UsageSummary Usage { get; init; } = new();
 }
 
-public class AssertionGrader : IGrader
+/// <summary>A rubric outcome with an optional numeric score.</summary>
+public sealed record RubricGradeResult : GradeResult
 {
-    public required string Name { get; set; }
-    public string? Description { get; set; }
+    /// <summary>The rubric score, absent when it could not be evaluated.</summary>
+    public decimal? Score { get; init; }
+}
+
+/// <summary>A single deterministic check, optionally gating further grading.</summary>
+public sealed class AssertionGrader : IGrader
+{
+    /// <inheritdoc />
+    public required string Name { get; init; }
+
+    /// <inheritdoc />
+    public string? Description { get; init; }
+
+    /// <inheritdoc />
     public GraderType Type => GraderType.Assertion;
 
-    public required string Assertion { get; set; }
+    /// <summary>Whether a failed or errored check blocks this eval and remaining graders.</summary>
+    public bool Required { get; init; }
 
-    public Task<GradeResult> GradeAsync(
-        GradingContext context,
-        CancellationToken cancellationToken = default)
+    /// <summary>The typed check to execute.</summary>
+    public required AssertionCheck Check { get; init; }
+
+    /// <inheritdoc />
+    public async Task<GradeResult> GradeAsync(GradingContext context, CancellationToken cancellationToken = default)
     {
-        // TODO: implement real assertion evaluation against the eval result.
-        // Orchestration only for now — returns a placeholder result.
-        return Task.FromResult(new GradeResult
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
         {
-            Name = Name,
-            Passed = true,
-        });
+            var result = await Check.EvaluateAsync(context, cancellationToken);
+            return new GradeResult { Name = Name, Outcome = result.Outcome, Detail = result.Detail };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            return new GradeResult { Name = Name, Outcome = GradeOutcome.Error, Detail = ex.Message };
+        }
     }
 }
 
-public class RubricGrader : IGrader
+/// <summary>An LLM rubric definition. Rubric evaluation is not implemented yet.</summary>
+public sealed class RubricGrader : IGrader
 {
-    public required string Name { get; set; }
-    public string? Description { get; set; }
+    /// <inheritdoc />
+    public required string Name { get; init; }
+
+    /// <inheritdoc />
+    public string? Description { get; init; }
+
+    /// <inheritdoc />
     public GraderType Type => GraderType.Rubric;
 
-    public required string Rubric { get; set; }
+    /// <summary>The rubric to apply.</summary>
+    public required string Rubric { get; init; }
 
-    public Task<GradeResult> GradeAsync(
-        GradingContext context,
-        CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public Task<GradeResult> GradeAsync(GradingContext context, CancellationToken cancellationToken = default)
     {
-        // TODO: implement real rubric grading. This will use
-        // context.CreateGraderSessionAsync to grade in a dedicated harness
-        // instance and report the resulting token usage. Orchestration only for
-        // now — returns a placeholder result.
-        return Task.FromResult(new GradeResult
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult<GradeResult>(new RubricGradeResult
         {
             Name = Name,
-            Passed = true,
+            Outcome = GradeOutcome.Error,
+            Detail = "Rubric grading is not implemented.",
         });
     }
 }

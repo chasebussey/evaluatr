@@ -9,6 +9,7 @@ namespace Evaluatr.Cli.UnitTests;
 /// </summary>
 internal sealed class FakeEvalRunner : IEvalRunner
 {
+    public Func<Eval, EvalReport>? MakeReport { get; init; }
     public List<Eval> RanEvals { get; } = [];
     public List<EvalRunOptions> ReceivedOptions { get; } = [];
 
@@ -20,7 +21,7 @@ internal sealed class FakeEvalRunner : IEvalRunner
         RanEvals.Add(eval);
         ReceivedOptions.Add(options);
 
-        return Task.FromResult(new EvalReport
+        return Task.FromResult(MakeReport?.Invoke(eval) ?? new EvalReport
         {
             EvalName = eval.Name,
             Status = EvalRunStatus.Completed,

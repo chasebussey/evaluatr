@@ -12,7 +12,8 @@ evals:
     graders:
       - name: "skill check"
         type: "assertion"
-        assertion: "sample assertion"
+        check: transcript-contains
+        text: "sample assertion"
       - name: "rubric checker"
         type: "rubric"
         rubric: "Verify the output yadda yadda"

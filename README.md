@@ -1,7 +1,7 @@
 # Evaluatr
 
 > [!WARNING]
-> Early alpha: agent execution is wired up, but assertion and rubric grading are not implemented. Both graders currently return placeholder PASS results; these do not establish task success.
+> Early alpha: deterministic assertion grading is implemented, but rubric grading is not. Rubric graders report ERROR until implemented.
 
 Evaluatr is a .NET CLI tool for running evaluation suites against agentic developer tooling (preliminary focus on GitHub Copilot). This tool is intended to help teams
 understand how changes to their outer harness impact real-world performance on engineering tasks.
@@ -15,12 +15,13 @@ Evaluatr loads YAML eval suites and drives GitHub Copilot through its SDK. Curre
 - Loading suites from `.evals/` or a path supplied with `--file` or `--directory` (directory loading is top-level only)
 - Parsing typed eval and grader models, validating suite execution-mode consistency, and resolving the requested harness
 - Sequential eval execution across three workspace modes: remote repository, local commit, and live workspace
-- Copilot prompt execution, optional named-agent selection, transcript collection, and token accounting
-- Console reports containing execution status, placeholder grades, and token usage
+- Copilot prompt execution, optional named-agent selection, transcript and tool-call collection, and token accounting
+- Deterministic file, transcript, and tool-call assertions, with optional required-check gating
+- Console reports containing execution status, grading verdict, individual outcomes, and token usage
 
-Assertion and rubric grader models and orchestration exist, including a session abstraction for isolated rubric grading, but neither grader evaluates results yet. There is no persisted or machine-readable report output.
+Rubric session infrastructure exists, but rubric evaluation remains unimplemented. There is no persisted or machine-readable report output.
 
-Unit tests cover parsing, validation, CLI behavior, and Git workspace handling. They do not verify a successful authenticated Copilot run or meaningful grading.
+Unit tests cover parsing, validation, assertion grading, grading policy, tool-event collection, CLI behavior, and Git workspace handling. They do not verify a successful authenticated Copilot run.
 
 ---
 
@@ -107,11 +108,68 @@ evals:
     graders:
       - name: "file exists"
         type: "assertion"
-        assertion: "The expected file is present."
+        check: file-exists
+        path: src/output.cs
+        required: true
       - name: "quality check"
         type: "rubric"
         rubric: "The output should be clear and well-structured."
 ```
+
+### Assertion Checks
+
+Each assertion grader contains exactly one check:
+
+```yaml
+graders:
+  - name: output exists
+    type: assertion
+    check: file-exists
+    path: src/output.cs
+    required: true
+
+  - name: output has expected content
+    type: assertion
+    check: file-contains
+    path: src/output.cs
+    text: "public class Output"
+
+  - name: agent explains verification
+    type: assertion
+    check: transcript-contains
+    text: "Tests passed"
+
+  - name: agent used the shell
+    type: assertion
+    check: tool-called
+    tool: bash
+```
+
+- `file-exists` passes only for a file, not a directory.
+- `file-contains` reads UTF-8 and matches literal, case-sensitive text. Invalid UTF-8 is an ERROR.
+- `transcript-contains` matches literal, case-sensitive assistant message text, not tool output.
+- `tool-called` matches the exact SDK tool name at execution start at least once, regardless of the tool's eventual outcome. Mentions in text and grader-session tool calls do not count. Use the harness's actual tool name.
+- `text` must not be empty; `tool` must not be blank. Unknown checks, unknown/duplicate YAML keys, and fields irrelevant to the selected check are rejected.
+
+File paths use `/` separators and must be workspace-relative. Absolute paths and traversal outside the workspace are rejected. Runtime checks also reject symbolic links that lead outside the workspace, including intermediate directory links. This boundary is not an OS sandbox and does not protect against another process concurrently replacing paths during inspection.
+
+**Breaking schema change:** free-form `assertion:` is no longer supported. Replace it with `check:` and the applicable `path`, `text`, or `tool` fields; legacy definitions are rejected with a migration message.
+
+### Grading Policy and Reports
+
+Assertions report **PASS**, **FAIL** (evaluated but did not match), or **ERROR** (could not evaluate), with explanations and no numeric scores. Rubric results have a separate optional score.
+
+`required` defaults to `false`. Optional assertion failures and errors are diagnostic and do not block a passing verdict. Graders run after agent execution in this order, preserving YAML order within each group:
+
+1. Required assertions
+2. Optional assertions
+3. Rubric graders
+
+A required assertion FAIL or ERROR fails the eval and short-circuits grading. All remaining graders report SKIPPED and name the blocking assertion. The next eval still runs. Cancellation stops execution rather than becoming a grading error.
+
+Execution status (`Completed`) is separate from the grading verdict (`PASS`, `FAIL`, or `ERROR`). A required assertion failure/error or rubric failure gives FAIL; a rubric error gives ERROR. With no blocking checks, the verdict is PASS—even if optional assertions failed or there are no graders. This is not proof of task correctness. Unimplemented rubric graders currently report ERROR, never a placeholder PASS.
+
+The CLI runs subsequent evals after grading failures/errors and exits nonzero if any eval's verdict is FAIL or ERROR. Invalid suite configuration is rejected before agent execution. Harness authentication fail-fast/circuit breaking is a follow-up, not part of grading policy.
 
 ### Execution Modes
 

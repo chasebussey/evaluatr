@@ -1,4 +1,3 @@
-using System.Text;
 using Evaluatr.Core.Evals;
 using Evaluatr.Core.Graders;
 using Evaluatr.Core.Runner;
@@ -64,6 +63,11 @@ public sealed class CopilotEvalRunner : IEvalRunner
         ArgumentNullException.ThrowIfNull(eval);
         ArgumentNullException.ThrowIfNull(options);
 
+        foreach (var assertion in eval.Graders.OfType<AssertionGrader>())
+        {
+            assertion.Check.Validate();
+        }
+
         // Repo eval → isolated temp clone.
         if (eval.Repo is not null)
         {
@@ -118,10 +122,10 @@ public sealed class CopilotEvalRunner : IEvalRunner
         CancellationToken cancellationToken)
     {
         var evalResult = await ExecuteEvalAsync(eval, options, workingDirectory, cancellationToken);
-        var gradeResults = await RunGradersAsync(
+        var grading = await RunGradersAsync(
             eval, options, evalResult, workingDirectory, cancellationToken);
 
-        var combinedUsage = gradeResults.Aggregate(
+        var combinedUsage = grading.Results.Aggregate(
             evalResult.UsageSummary,
             (usage, grade) => usage.Add(grade.Usage));
 
@@ -130,7 +134,8 @@ public sealed class CopilotEvalRunner : IEvalRunner
             EvalName = eval.Name,
             Status = EvalRunStatus.Completed,
             EvalResult = evalResult,
-            GradeResults = gradeResults,
+            Verdict = grading.Verdict,
+            GradeResults = grading.Results,
             UsageSummary = combinedUsage,
         };
     }
@@ -168,43 +173,24 @@ public sealed class CopilotEvalRunner : IEvalRunner
             await session.Rpc.Agent.SelectAsync(eval.Agent, cancellationToken);
         }
 
-        var transcript = new StringBuilder();
-        var inputTokens = 0L;
-        var outputTokens = 0L;
+        var collector = new EvalEventCollector();
         var result = new TaskCompletionSource<EvalResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var _ = cancellationToken.Register(
             () => result.TrySetCanceled(cancellationToken));
 
-        session.On<SessionEvent>(evt =>
+        using var subscription = session.On<SessionEvent>(evt =>
         {
+            collector.Record(evt);
             switch (evt)
             {
-                case AssistantMessageEvent msg:
-                    transcript.Append(msg.Data.Content);
-                    break;
-
-                case AssistantUsageEvent usage:
-                    // assistant.usage carries both input and output token counts.
-                    inputTokens += usage.Data.InputTokens ?? 0L;
-                    outputTokens += usage.Data.OutputTokens ?? 0L;
-                    break;
-
                 case SessionIdleEvent idle when idle.Data.Aborted == true:
                     result.TrySetCanceled();
                     break;
 
                 case SessionIdleEvent:
-                    result.TrySetResult(new EvalResult
-                    {
-                        Transcript = transcript.ToString(),
-                        UsageSummary = new UsageSummary
-                        {
-                            InputTokens = (int)inputTokens,
-                            OutputTokens = (int)outputTokens,
-                        },
-                    });
+                    result.TrySetResult(collector.Snapshot());
                     break;
 
                 case SessionErrorEvent err:
@@ -222,46 +208,27 @@ public sealed class CopilotEvalRunner : IEvalRunner
     }
 
     /// <summary>
-    /// Runs the eval's graders: assertion graders first (in-process), then rubric
-    /// graders, each in its own dedicated Copilot instance.
+    /// Runs Core's grading policy, supplying an isolated instance for each rubric.
     /// </summary>
-    private static async Task<IReadOnlyList<GradeResult>> RunGradersAsync(
+    private static Task<GradingReport> RunGradersAsync(
         Eval eval,
         EvalRunOptions options,
         EvalResult evalResult,
         string workingDirectory,
         CancellationToken cancellationToken)
     {
-        var results = new List<GradeResult>(eval.Graders.Count);
-
-        // Assertion graders run first, in declared order, without a Copilot instance.
-        var assertionContext = new GradingContext
+        var context = new GradingContext
         {
             EvalResult = evalResult,
             WorkingDirectory = workingDirectory,
         };
 
-        foreach (var grader in eval.Graders.Where(g => g.Type == GraderType.Assertion))
-        {
-            results.Add(await grader.GradeAsync(assertionContext, cancellationToken));
-        }
-
-        // Rubric graders run next, each in its own dedicated Copilot instance so
-        // that grading is isolated from eval execution (and from each other).
-        foreach (var grader in eval.Graders.Where(g => g.Type == GraderType.Rubric))
+        return GradingRunner.RunAsync(eval.Graders, context, async (grader, gradingContext, token) =>
         {
             await using var instance = new RubricCopilotInstance(options, workingDirectory);
-            var context = new GradingContext
-            {
-                EvalResult = evalResult,
-                WorkingDirectory = workingDirectory,
-                CreateGraderSessionAsync = instance.CreateSessionAsync,
-            };
-
-            results.Add(await grader.GradeAsync(context, cancellationToken));
-        }
-
-        return results;
+            var rubricContext = gradingContext with { CreateGraderSessionAsync = instance.CreateSessionAsync };
+            return await grader.GradeAsync(rubricContext, token);
+        }, cancellationToken);
     }
 
     /// <summary>
