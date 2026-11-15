@@ -1,5 +1,4 @@
 using System.CommandLine;
-using Evaluatr.Cli;
 using Evaluatr.Core.Evals;
 using Evaluatr.Core.Runner;
 
@@ -62,7 +61,7 @@ public static class RunCommand
     /// live-workspace suites, then runs every eval via the resolved
     /// <see cref="IEvalRunner"/> and surfaces the grade results.
     /// </summary>
-    public static async Task<int> Run(
+    private static async Task<int> Run(
         ParseResult parseResult,
         Func<string, IEvalRunner?> resolveRunner,
         TextReader? standardInput = null,

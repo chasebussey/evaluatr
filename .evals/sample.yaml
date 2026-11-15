@@ -3,8 +3,7 @@ harness: "copilot"
 evals:
   - name: "test eval task"
     description: "this is a test eval task, it won't actually do anything"
-    repo: "test/repo"
-    baseCommit: "reallyShouldBeAHash"
+    baseCommit: "02ac7cf7611a9e0afbbdb2776af4db2c074944a0"
     prompt: |
       I think this is still how you define a multiline string.
       
