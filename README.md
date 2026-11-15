@@ -1,7 +1,7 @@
 # Evaluatr
 
 > [!WARNING]
-> This project is currently in-progress, with core functionality yet unimplemented.
+> Early alpha: agent execution is wired up, but assertion and rubric grading are not implemented. Both graders currently return placeholder PASS results; these do not establish task success.
 
 Evaluatr is a .NET CLI tool for running evaluation suites against agentic developer tooling (preliminary focus on GitHub Copilot). This tool is intended to help teams
 understand how changes to their outer harness impact real-world performance on engineering tasks.
@@ -10,12 +10,17 @@ understand how changes to their outer harness impact real-world performance on e
 
 ## Overview
 
-Evaluatr loads eval suites in YAML and run them against an AI agent. It handles:
+Evaluatr loads YAML eval suites and drives GitHub Copilot through its SDK. Currently implemented:
 
-- Loading eval suites from a default directory (`.evals/`) or a specified path with `--file` or `--directory`
-- Validating suite structure and execution mode at load time
-- Orchestrating eval execution across three workspace modes (remote repo, local commit, live workspace)
-- Running graders (assertion and rubric) against agent output and reporting results
+- Loading suites from `.evals/` or a path supplied with `--file` or `--directory` (directory loading is top-level only)
+- Parsing typed eval and grader models, validating suite execution-mode consistency, and resolving the requested harness
+- Sequential eval execution across three workspace modes: remote repository, local commit, and live workspace
+- Copilot prompt execution, optional named-agent selection, transcript collection, and token accounting
+- Console reports containing execution status, placeholder grades, and token usage
+
+Assertion and rubric grader models and orchestration exist, including a session abstraction for isolated rubric grading, but neither grader evaluates results yet. There is no persisted or machine-readable report output.
+
+Unit tests cover parsing, validation, CLI behavior, and Git workspace handling. They do not verify a successful authenticated Copilot run or meaningful grading.
 
 ---
 
@@ -24,6 +29,10 @@ Evaluatr loads eval suites in YAML and run them against an AI agent. It handles:
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- Git for repository cloning and workspace operations
+- GitHub Copilot access and authentication available to the Copilot CLI used by the SDK
+
+Copilot tool-use permission requests are automatically approved. Only run trusted prompts and repositories; a temporary clone or worktree is not a security sandbox.
 
 ### Build
 
@@ -42,6 +51,22 @@ dotnet test
 
 ## Usage
 
+Run from source with:
+
+```bash
+dotnet run --project src/Evaluatr.Cli/Evaluatr.Cli.csproj -- --help
+dotnet run --project src/Evaluatr.Cli/Evaluatr.Cli.csproj -- run
+```
+
+The CLI is also configured as a .NET tool (`Evaluatr.Cli`, version `0.0.1-alpha`). To install a local build:
+
+```bash
+dotnet pack src/Evaluatr.Cli/Evaluatr.Cli.csproj -o ./artifacts
+dotnet tool install --global Evaluatr.Cli --version 0.0.1-alpha --add-source ./artifacts
+```
+
+Once installed:
+
 ```bash
 # Run all suites in the default .evals/ directory
 evaluatr run
@@ -54,6 +79,9 @@ evaluatr run --directory path/to/evals/
 
 # Allow a dirty working tree (live workspace suites only)
 evaluatr run --allow-dirty
+
+# Include loading and mode-resolution diagnostics
+evaluatr run --verbose
 
 # Show help
 evaluatr --help
@@ -97,15 +125,15 @@ Evaluatr infers an execution mode from the fields present across all evals in a 
 
 #### Repo
 
-Evaluatr will clone the referenced repository to a temp directory and execute the eval suite from that directory. Specify a `baseCommit` to check out a specific commit.
+Each eval gets an independent temporary clone of its referenced repository, removed after the run. Specify a `baseCommit` to check out a specific commit; repo-mode evals may use different repositories and may independently omit or specify `baseCommit`.
 
 #### Commit
 
-If no `repo` is specified, but `baseCommit` is, Evaluatr will create a throwaway worktree at `baseCommit`, then execute evals in that worktree.
+If no `repo` is specified, but every eval has `baseCommit`, Evaluatr creates a throwaway detached worktree per eval at its requested commit and removes it after the run. The current working directory must be inside a Git working tree.
 
 #### Live Workspace
 
-With neither `repo` nor `baseCommit` specified, Evaluatr runs in the current working directory. If the working tree is dirty, a warning will be printed:
+With neither `repo` nor `baseCommit` specified, evals share the current working directory, which must be inside a Git working tree. Changes are not rolled back. If the working tree is dirty before execution, the CLI prompts once:
 
 ```
 The working directory '/path/to/repo' has uncommitted changes.
@@ -113,7 +141,7 @@ Live-workspace evals run in place and may modify tracked and untracked files.
 Proceed against the dirty tree? [y/N]
 ```
 
-Pass `--allow-dirty` to bypass that warning.
+Pass `--allow-dirty` to skip confirmation and permit dirty-tree execution. Otherwise only `y` or `yes` proceeds. The runner also checks cleanliness before each live-workspace eval, so changes from an earlier eval can prevent a later one from running unless dirty-tree execution was allowed.
 
 ---
 

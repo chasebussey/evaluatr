@@ -2,24 +2,30 @@
 
 ## Overview
 
-Evaluatr is a small .NET 10 codebase for loading eval suite definitions from YAML and exposing them through a CLI.
+Evaluatr is an early-alpha .NET 10 CLI for running YAML eval suites against agentic developer tooling, currently GitHub Copilot.
 
 Current behavior:
-- `Evaluatr.Core` parses eval suite YAML into typed models.
-- `Evaluatr.Cli` provides the `evaluatr run` command.
-- Tests cover YAML parsing and CLI behavior.
+- `Evaluatr.Core` provides typed suite/grader models, YAML parsing, mode validation, and Git workspace utilities.
+- `Evaluatr.Cli` loads suites, resolves harnesses, handles dirty-tree confirmation, and runs evals sequentially with console reports.
+- `Evaluatr.Copilot` drives SDK sessions in temporary clones, detached worktrees, or the live workspace and collects transcripts and token usage.
+- Assertion and rubric grading are placeholders: both always return `Passed = true` without evaluating results. Do not treat PASS output as task validation.
+- Tests cover parsing, validation, CLI behavior, and Git workspace handling; successful authenticated Copilot execution is not covered.
 
 ## Repository Layout
 
 - `src/Evaluatr.Core/`
   - Core domain models for evals and graders
-  - YAML parsing via `YamlDotNet`
+  - YAML parsing via `YamlDotNet`, suite mode validation, and Git checkout/workspace helpers
 - `src/Evaluatr.Cli/`
-  - Console entrypoint and CLI command handling
+  - Console entrypoint, command handling, reporting, and harness registry
+- `src/Evaluatr.Copilot/`
+  - Copilot SDK execution and grader-session adapter
 - `tests/Evaluatr.Core.UnitTests/`
-  - Unit tests for YAML parsing
+  - Unit tests for YAML parsing, validation, and Git workspace/worktree behavior
 - `tests/Evaluatr.Cli.UnitTests/`
   - Unit tests for CLI behavior
+- `tests/Evaluatr.Copilot.UnitTests/`
+  - Runner workspace-guard tests, not successful end-to-end Copilot execution
 - `tests/testdata/sample.yaml`
   - Canonical sample eval suite used by tests
 - `.evals/`
@@ -51,9 +57,17 @@ Run these from the repository root.
 - Grader polymorphism is currently driven by the YAML `type` field.
 
 ### CLI
-- `Program.cs` delegates to `CliApplication.RunAsync`.
-- `CliApplication` owns root command routing and top-level help.
-- `RunCommand` owns argument parsing, default path resolution, suite loading, and user-facing error messages.
+- `Program.cs` builds and invokes a `System.CommandLine` root command.
+- `Commands/RunCommand.cs` owns options, path resolution, suite loading, mode/harness preflight, dirty-tree confirmation, sequential execution, and report output.
+- `HarnessRegistry` maps harness ids to runners; currently only `copilot` is registered.
+- The project is packaged as a .NET tool named `evaluatr` (`Evaluatr.Cli`, version `0.0.1-alpha`).
+
+### Execution and grading
+- Core's `IEvalRunner` and `EvalRunOptions` keep the runner boundary harness-neutral.
+- `CopilotEvalRunner` selects a temporary repository clone, detached local worktree, or live working directory per eval.
+- Copilot tool permissions are auto-approved. Temporary checkouts are not security sandboxes; prompts and repositories must be trusted.
+- Assertion graders are orchestrated before rubric graders. The rubric session infrastructure exists, but neither grader currently evaluates results.
+- Reports are console-only; there is no persisted or machine-readable report output.
 
 ## Working Guidelines
 
@@ -93,11 +107,17 @@ If the change is CLI-specific, make sure the relevant CLI command is also exerci
 - The default eval suite directory is `.evals`.
 - Supported suite file extensions are `.yaml` and `.yml`.
 - Directory loading is currently top-level only; it does not recurse.
-- The CLI currently lists loaded suites and eval names rather than executing evals.
+- All evals within a suite must use the same execution mode. Repo-mode evals may independently specify `baseCommit`.
+- Commit and live-workspace modes require the current directory to be inside a Git working tree.
+- Live-workspace evals share the working directory and do not roll back changes. Unless dirty execution is allowed, the runner checks cleanliness before each eval; an earlier eval's changes can block the next one.
+- `--allow-dirty` skips the initial dirty-tree prompt and permits dirty-tree execution.
+- Running evals requires Git and working Copilot access/authentication. Unit-test success alone does not validate that runtime setup.
 
 ## Good First Places To Look
 
-- CLI flow: `src/Evaluatr.Cli/CliApplication.cs`
-- `run` command behavior: `src/Evaluatr.Cli/RunCommand.cs`
+- CLI entrypoint and harness resolution: `src/Evaluatr.Cli/Program.cs`, `src/Evaluatr.Cli/HarnessRegistry.cs`
+- `run` command behavior: `src/Evaluatr.Cli/Commands/RunCommand.cs`
+- Copilot execution: `src/Evaluatr.Copilot/CopilotEvalRunner.cs`
+- Suite mode validation: `src/Evaluatr.Core/Evals/EvalSuiteValidator.cs`
 - YAML parsing: `src/Evaluatr.Core/Evals/EvalSuiteParser.cs`
 - Schema models: `src/Evaluatr.Core/Evals/Types.cs`, `src/Evaluatr.Core/Graders/Types.cs`
