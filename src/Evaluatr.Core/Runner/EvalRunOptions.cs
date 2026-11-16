@@ -1,3 +1,5 @@
+using Evaluatr.Core.Graders;
+
 namespace Evaluatr.Core.Runner;
 
 /// <summary>
@@ -22,6 +24,13 @@ public record EvalRunOptions
     /// <see langword="null"/> (the default), the harness uses its own default model.
     /// </summary>
     public string? Model { get; init; }
+
+    /// <summary>
+    /// Composition-root factory for fresh inspection-only judge sessions. Resolves
+    /// optional rubric provider overrides against the suite's default harness.
+    /// Judge model defaults are independent of the execution model above.
+    /// </summary>
+    public Func<GraderSessionOptions, CancellationToken, Task<IGraderSession>>? CreateGraderSessionAsync { get; init; }
 
     /// <summary>
     /// The working directory for live-workspace evals (evals with no <c>repo</c>

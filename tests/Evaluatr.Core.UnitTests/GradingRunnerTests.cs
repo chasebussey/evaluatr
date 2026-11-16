@@ -8,6 +8,7 @@ public class GradingRunnerTests
     private static readonly GradingContext Context = new()
     {
         WorkingDirectory = Path.GetTempPath(),
+        TaskPrompt = "Complete the task.",
         EvalResult = new EvalResult { Transcript = "done", UsageSummary = new UsageSummary() },
     };
 
@@ -17,20 +18,22 @@ public class GradingRunnerTests
         var visited = new List<string>();
         var graders = new IGrader[]
         {
-            new RubricGrader { Name = "rubric-1", Rubric = "quality" },
+            Rubric("rubric-1"),
             Assertion("optional-1", false), Assertion("required-1", true),
             Assertion("optional-2", false), Assertion("required-2", true),
-            new RubricGrader { Name = "rubric-2", Rubric = "quality" },
+            Rubric("rubric-2"),
         };
 
-        var report = await GradingRunner.RunAsync(graders, Context, (grader, _, _) =>
+        var context = Context with
         {
-            visited.Add(grader.Name);
-            return Task.FromResult<GradeResult>(new RubricGradeResult
+            CreateGraderSessionAsync = (options, _) =>
             {
-                Name = grader.Name, Outcome = GradeOutcome.Pass, Detail = "matched", Score = 0.9m,
-            });
-        });
+                visited.Add(options.Model!);
+                return Task.FromResult<IGraderSession>(new FakeGraderSession(
+                    """{"criteria":[{"id":"quality","score":0.9,"explanation":"good"}]}"""));
+            },
+        };
+        var report = await GradingRunner.RunAsync(graders, context);
 
         Assert.Equal(new[] { "required-1", "required-2", "optional-1", "optional-2", "rubric-1", "rubric-2" },
             report.Results.Select(result => result.Name));
@@ -46,13 +49,23 @@ public class GradingRunnerTests
         var graders = new IGrader[]
         {
             Assertion("optional", false),
-            new RubricGrader { Name = "rubric", Rubric = "quality" },
+            Rubric("rubric"),
             Assertion("blocker", true, outcome),
             Assertion("next-required", true),
         };
 
-        var report = await GradingRunner.RunAsync(graders, Context, (_, _, _) =>
-            throw new InvalidOperationException("Rubric must not start."));
+        var sessionsStarted = 0;
+        var context = Context with
+        {
+            CreateGraderSessionAsync = (_, _) =>
+            {
+                sessionsStarted++;
+                throw new InvalidOperationException("Rubric must not start.");
+            },
+        };
+        var report = await GradingRunner.RunAsync(graders, context);
+
+        Assert.Equal(0, sessionsStarted);
 
         Assert.Equal(EvalVerdict.Fail, report.Verdict);
         Assert.Equal(outcome, report.Results[0].Outcome);
@@ -88,10 +101,10 @@ public class GradingRunnerTests
     }
 
     [Fact]
-    public async Task RubricPlaceholder_IsAnErrorNotAFalsePass()
+    public async Task MissingJudgeFactory_IsAnErrorNotAFalsePass()
     {
         var report = await GradingRunner.RunAsync(
-            [new RubricGrader { Name = "rubric", Rubric = "quality" }], Context);
+            [Rubric("rubric")], Context);
 
         Assert.Equal(EvalVerdict.Error, report.Verdict);
         Assert.Equal(GradeOutcome.Error, report.Results[0].Outcome);
@@ -125,6 +138,14 @@ public class GradingRunnerTests
         Assert.Equal(EvalVerdict.Pass, report.Verdict);
         Assert.Empty(report.Results);
     }
+
+    private static RubricGrader Rubric(string name) => new()
+    {
+        Name = name,
+        Model = name,
+        PassThreshold = 0.8m,
+        Criteria = [new RubricCriterion { Id = "quality", Description = "Quality" }],
+    };
 
     private static AssertionGrader Assertion(string name, bool required, GradeOutcome outcome = GradeOutcome.Pass) => new()
     {

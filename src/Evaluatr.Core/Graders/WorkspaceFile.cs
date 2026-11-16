@@ -2,7 +2,7 @@ using Evaluatr.Core.Evals;
 
 namespace Evaluatr.Core.Graders;
 
-// Centralizes the file-check boundary. This is not an OS sandbox: another process
+// Shared boundary for file assertions and judge inspection. Not an OS sandbox: another process
 // concurrently replacing paths can race inspection and opening a file.
 internal static class WorkspaceFile
 {
@@ -11,7 +11,7 @@ internal static class WorkspaceFile
         if (string.IsNullOrWhiteSpace(path) || System.IO.Path.IsPathRooted(path)
             || path.Contains(':') || path.Contains('\\') || path.Contains('\0'))
         {
-            throw new EvalSuiteValidationException("Assertion 'path' must be a workspace-relative path using '/' separators.");
+            throw new EvalSuiteValidationException("Workspace 'path' must be relative, using '/' separators.");
         }
 
         var depth = 0;
@@ -21,7 +21,7 @@ internal static class WorkspaceFile
             {
                 if (--depth < 0)
                 {
-                    throw new EvalSuiteValidationException("Assertion 'path' must not escape the workspace.");
+                    throw new EvalSuiteValidationException("Workspace 'path' must not escape the workspace.");
                 }
             }
             else if (part is not "" and not ".")
@@ -56,7 +56,7 @@ internal static class WorkspaceFile
 
             if (++linksFollowed > 40)
             {
-                throw new IOException("Too many symbolic links in assertion path.");
+                throw new IOException("Too many symbolic links in workspace path.");
             }
 
             var parent = System.IO.Path.GetDirectoryName(current)!;
@@ -104,7 +104,7 @@ internal static class WorkspaceFile
         var prefix = System.IO.Path.EndsInDirectorySeparator(root) ? root : root + System.IO.Path.DirectorySeparatorChar;
         if (!path.Equals(root, comparison) && !path.StartsWith(prefix, comparison))
         {
-            throw new IOException("Assertion path resolves outside the eval workspace.");
+            throw new IOException("Path resolves outside the eval workspace.");
         }
     }
 }

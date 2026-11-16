@@ -11,12 +11,11 @@ public static class GradingRunner
     /// <summary>
     /// Runs required assertions, optional assertions, then rubrics, preserving order
     /// within each group. Only required assertions gate subsequent grading.
-    /// The optional rubric executor owns any harness-specific session lifetime.
+    /// Rubric graders own their provider-neutral session lifetime.
     /// </summary>
     public static async Task<GradingReport> RunAsync(
         IReadOnlyList<IGrader> graders,
         GradingContext context,
-        Func<IGrader, GradingContext, CancellationToken, Task<GradeResult>>? executeRubric = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -44,9 +43,7 @@ public static class GradingRunner
             GradeResult result;
             try
             {
-                result = grader.Type == GraderType.Rubric && executeRubric is not null
-                    ? await executeRubric(grader, context, cancellationToken)
-                    : await grader.GradeAsync(context, cancellationToken);
+                result = await grader.GradeAsync(context, cancellationToken);
             }
             catch (OperationCanceledException)
             {

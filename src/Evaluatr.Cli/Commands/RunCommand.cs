@@ -38,11 +38,14 @@ public static class RunCommand
     /// The reader used for the interactive dirty-tree confirmation prompt. Injectable so
     /// the prompt can be driven in tests; defaults to <see cref="Console.In"/>.
     /// </param>
+    /// <param name="resolveProvider">Resolves judge provider adapters; defaults to the registered providers.</param>
     public static Command Build(
         Func<string, IEvalRunner?>? resolveRunner = null,
-        TextReader? standardInput = null)
+        TextReader? standardInput = null,
+        Func<string, IAgentProvider?>? resolveProvider = null)
     {
         resolveRunner ??= HarnessRegistry.Resolve;
+        resolveProvider ??= AgentProviderRegistry.Resolve;
 
         var cmd = new Command("run", "Execute eval suites.")
         {
@@ -52,7 +55,7 @@ public static class RunCommand
             AllowDirtyOption,
         };
         cmd.SetAction((parseResult, cancellationToken) =>
-            Run(parseResult, resolveRunner, standardInput, cancellationToken));
+            Run(parseResult, resolveRunner, resolveProvider, standardInput, cancellationToken));
         return cmd;
     }
 
@@ -65,6 +68,7 @@ public static class RunCommand
     private static async Task<int> Run(
         ParseResult parseResult,
         Func<string, IEvalRunner?> resolveRunner,
+        Func<string, IAgentProvider?> resolveProvider,
         TextReader? standardInput = null,
         CancellationToken cancellationToken = default)
     {
@@ -103,7 +107,8 @@ public static class RunCommand
 
         // Determine (and validate) each suite's execution mode and resolve its runner up
         // front, before any checkout or Copilot work, so authoring mistakes fail fast.
-        var planned = new List<(EvalSuite Suite, SuiteExecutionMode Mode, IEvalRunner Runner)>(evalSuites.Count);
+        var planned = new List<(EvalSuite Suite, SuiteExecutionMode Mode, IEvalRunner Runner,
+            Func<GraderSessionOptions, CancellationToken, Task<IGraderSession>> JudgeFactory)>(evalSuites.Count);
         foreach (var suite in evalSuites)
         {
             SuiteExecutionMode mode;
@@ -126,8 +131,18 @@ public static class RunCommand
                 return 1;
             }
 
+            try
+            {
+                var judgeFactory = CreateJudgeSessionFactory(suite, resolveProvider);
+                planned.Add((suite, mode, runner, judgeFactory));
+            }
+            catch (EvalSuiteValidationException ex)
+            {
+                output.WriteError(ex.Message);
+                return 1;
+            }
+
             output.WriteVerbose($"Suite '{suite.Name}' resolved to {mode} mode on harness '{suite.Harness}'.");
-            planned.Add((suite, mode, runner));
         }
 
         // Live-workspace suites run in place and may mutate the working tree. If the tree
@@ -153,19 +168,42 @@ public static class RunCommand
         };
 
         var hasBlockingResult = false;
-        foreach (var (suite, mode, runner) in planned)
+        foreach (var (suite, mode, runner, judgeFactory) in planned)
         {
             output.WriteLine($"Suite: {suite.Name} ({mode})");
+            var suiteOptions = options with { CreateGraderSessionAsync = judgeFactory };
 
             foreach (var eval in suite.Evals)
             {
-                var report = await runner.RunAsync(eval, options, cancellationToken);
+                var report = await runner.RunAsync(eval, suiteOptions, cancellationToken);
                 WriteReport(output, report);
                 hasBlockingResult |= report.Verdict != EvalVerdict.Pass;
             }
         }
 
         return hasBlockingResult ? 1 : 0;
+    }
+
+    private static Func<GraderSessionOptions, CancellationToken, Task<IGraderSession>> CreateJudgeSessionFactory(
+        EvalSuite suite, Func<string, IAgentProvider?> resolveProvider)
+    {
+        var providers = new Dictionary<string, IAgentProvider>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rubric in suite.Evals.SelectMany(eval => eval.Graders).OfType<RubricGrader>())
+        {
+            var id = rubric.Provider ?? suite.Harness;
+            if (providers.ContainsKey(id)) continue;
+
+            var provider = resolveProvider(id)
+                ?? throw new EvalSuiteValidationException($"Rubric '{rubric.Name}' requests unknown judge provider '{id}'.");
+            if (!provider.SupportsInspectionOnlySessions)
+            {
+                throw new EvalSuiteValidationException($"Judge provider '{id}' cannot enforce inspection-only workspace access.");
+            }
+
+            providers.Add(id, provider);
+        }
+
+        return (request, token) => providers[request.Provider ?? suite.Harness].CreateGraderSessionAsync(request, token);
     }
 
     /// <summary>
@@ -237,9 +275,17 @@ public static class RunCommand
         foreach (var grade in report.GradeResults)
         {
             var outcome = grade.Outcome.ToString().ToUpperInvariant();
-            var score = grade is RubricGradeResult { Score: { } value } ? $" (score: {value})" : "";
+            var score = grade is RubricGradeResult { Score: { } value } ? FormattableString.Invariant($" (score: {value:G})") : "";
             output.WriteLine($"    [{outcome}] {grade.Name}{score}");
             output.WriteLine($"      {grade.Detail}");
+
+            if (grade is RubricGradeResult rubric)
+            {
+                foreach (var criterion in rubric.Criteria)
+                {
+                    output.WriteLine(FormattableString.Invariant($"      {criterion.Id}: {criterion.Score:G} (weight: {criterion.Weight:G}) — {criterion.Explanation}"));
+                }
+            }
         }
 
         var usage = report.UsageSummary;

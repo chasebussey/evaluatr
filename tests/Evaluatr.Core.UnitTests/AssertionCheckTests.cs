@@ -173,6 +173,7 @@ public sealed class AssertionCheckTests : IDisposable
         var context = new GradingContext
         {
             WorkingDirectory = _root,
+            TaskPrompt = "Complete the task.",
             EvalResult = new EvalResult
             {
                 Transcript = "[done] mentioned-tool",

@@ -18,7 +18,7 @@ public class EvalEventCollectorTests
 
         var grade = await grader.GradeAsync(new GradingContext
         {
-            WorkingDirectory = Path.GetTempPath(), EvalResult = snapshot,
+            WorkingDirectory = Path.GetTempPath(), TaskPrompt = "Complete the task.", EvalResult = snapshot,
         });
 
         Assert.Equal(new[] { "bash" }, snapshot.ToolCalls);

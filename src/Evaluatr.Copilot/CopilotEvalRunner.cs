@@ -41,7 +41,7 @@ namespace Evaluatr.Copilot;
 /// </para>
 /// <para>
 /// <b>Grading</b> — assertion graders run first, in-process. Rubric graders run
-/// afterwards, each in its own dedicated Copilot instance. The report's usage
+/// afterwards, each through the configured judge provider. The report's usage
 /// combines the eval execution usage with every grader's own usage.
 /// </para>
 /// </remarks>
@@ -63,10 +63,7 @@ public sealed class CopilotEvalRunner : IEvalRunner
         ArgumentNullException.ThrowIfNull(eval);
         ArgumentNullException.ThrowIfNull(options);
 
-        foreach (var assertion in eval.Graders.OfType<AssertionGrader>())
-        {
-            assertion.Check.Validate();
-        }
+        EvalSuiteValidator.ValidateGraders(eval);
 
         // Repo eval → isolated temp clone.
         if (eval.Repo is not null)
@@ -208,7 +205,7 @@ public sealed class CopilotEvalRunner : IEvalRunner
     }
 
     /// <summary>
-    /// Runs Core's grading policy, supplying an isolated instance for each rubric.
+    /// Runs Core's grading policy using the provider-neutral factory from composition wiring.
     /// </summary>
     private static Task<GradingReport> RunGradersAsync(
         Eval eval,
@@ -220,62 +217,11 @@ public sealed class CopilotEvalRunner : IEvalRunner
         var context = new GradingContext
         {
             EvalResult = evalResult,
+            TaskPrompt = eval.Prompt,
             WorkingDirectory = workingDirectory,
+            CreateGraderSessionAsync = options.CreateGraderSessionAsync,
         };
 
-        return GradingRunner.RunAsync(eval.Graders, context, async (grader, gradingContext, token) =>
-        {
-            await using var instance = new RubricCopilotInstance(options, workingDirectory);
-            var rubricContext = gradingContext with { CreateGraderSessionAsync = instance.CreateSessionAsync };
-            return await grader.GradeAsync(rubricContext, token);
-        }, cancellationToken);
-    }
-
-    /// <summary>
-    /// A dedicated Copilot instance for a single rubric grader. The underlying
-    /// client is started lazily on first session request, so a grader that never
-    /// needs an LLM incurs no runtime cost.
-    /// </summary>
-    private sealed class RubricCopilotInstance(EvalRunOptions options, string workingDirectory)
-        : IAsyncDisposable
-    {
-        private readonly List<CopilotGraderSession> _sessions = [];
-        private CopilotClient? _client;
-
-        public async Task<IGraderSession> CreateSessionAsync(CancellationToken cancellationToken)
-        {
-            if (_client is null)
-            {
-                _client = new CopilotClient(new CopilotClientOptions
-                {
-                    GitHubToken = options.GitHubToken,
-                });
-                await _client.StartAsync();
-            }
-
-            var session = await _client.CreateSessionAsync(new SessionConfig
-            {
-                Model = options.Model ?? DefaultModel,
-                WorkingDirectory = workingDirectory,
-                OnPermissionRequest = PermissionHandler.ApproveAll,
-            });
-
-            var graderSession = new CopilotGraderSession(session);
-            _sessions.Add(graderSession);
-            return graderSession;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            foreach (var session in _sessions)
-            {
-                await session.DisposeAsync();
-            }
-
-            if (_client is not null)
-            {
-                await _client.DisposeAsync();
-            }
-        }
+        return GradingRunner.RunAsync(eval.Graders, context, cancellationToken);
     }
 }

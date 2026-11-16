@@ -73,12 +73,8 @@ public static class EvalSuiteValidator
         var evals = suite.Evals;
         foreach (var eval in evals ?? [])
         {
-            foreach (var assertion in eval.Graders.OfType<AssertionGrader>())
-            {
-                assertion.Check.Validate();
-            }
+            ValidateGraders(eval);
         }
-
 
         // An empty suite is a no-op; treat it as a live workspace so it never
         // throws and needs no repo/commit context.
@@ -116,5 +112,22 @@ public static class EvalSuiteValidator
         }
 
         return SuiteExecutionMode.LiveWorkspace;
+    }
+
+    /// <summary>Validates all grader definitions, including programmatically constructed ones.</summary>
+    public static void ValidateGraders(Eval eval)
+    {
+        foreach (var grader in eval.Graders)
+        {
+            switch (grader)
+            {
+                case AssertionGrader assertion:
+                    assertion.Check.Validate();
+                    break;
+                case RubricGrader rubric:
+                    rubric.Validate();
+                    break;
+            }
+        }
     }
 }

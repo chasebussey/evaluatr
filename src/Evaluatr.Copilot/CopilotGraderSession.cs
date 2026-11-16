@@ -1,76 +1,47 @@
-using System.Text;
 using Evaluatr.Core.Evals;
 using Evaluatr.Core.Graders;
 using GitHub.Copilot;
 
 namespace Evaluatr.Copilot;
 
-/// <summary>
-/// A Copilot-backed <see cref="IGraderSession"/>. Wraps a live
-/// <see cref="CopilotSession"/> so rubric graders can reason with an LLM without
-/// Core depending on the Copilot SDK. Accumulates token usage across every
-/// <see cref="AskAsync"/> call.
-/// </summary>
-internal sealed class CopilotGraderSession : IGraderSession
+/// <summary>A single-use judge conversation owning both its session and client.</summary>
+internal sealed class CopilotGraderSession(CopilotSession session, CopilotClient client) : IGraderSession
 {
-    private readonly CopilotSession _session;
-    private long _inputTokens;
-    private long _outputTokens;
+    private readonly JudgeResponseCollector _collector = new();
+    private int _asked;
 
-    public CopilotGraderSession(CopilotSession session)
-    {
-        _session = session;
-    }
+    public UsageSummary Usage => _collector.Usage;
 
-    /// <inheritdoc />
-    public UsageSummary Usage => new()
-    {
-        InputTokens = (int)_inputTokens,
-        OutputTokens = (int)_outputTokens,
-    };
-
-    /// <inheritdoc />
     public async Task<string> AskAsync(string prompt, CancellationToken cancellationToken = default)
     {
-        var transcript = new StringBuilder();
-        var completion = new TaskCompletionSource<string>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        using var _ = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-
-        _session.On<SessionEvent>(evt =>
+        if (Interlocked.Exchange(ref _asked, 1) != 0)
         {
-            switch (evt)
-            {
-                case AssistantMessageEvent msg:
-                    transcript.Append(msg.Data.Content);
-                    break;
+            throw new InvalidOperationException("A judge session may only be asked once.");
+        }
 
-                case AssistantUsageEvent usage:
-                    _inputTokens += usage.Data.InputTokens ?? 0L;
-                    _outputTokens += usage.Data.OutputTokens ?? 0L;
-                    break;
-
-                case SessionIdleEvent idle when idle.Data.Aborted == true:
-                    completion.TrySetCanceled();
-                    break;
-
-                case SessionIdleEvent:
-                    completion.TrySetResult(transcript.ToString());
-                    break;
-
-                case SessionErrorEvent err:
-                    completion.TrySetException(new CopilotEvalException(
-                        "grader", err.Data.Message, err.Data.ErrorCode));
-                    break;
-            }
-        });
-
-        await _session.SendAsync(new MessageOptions { Prompt = prompt });
-
-        return await completion.Task;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMinutes(5));
+        using var subscription = session.On<SessionEvent>(_collector.Record);
+        try
+        {
+            await session.SendAsync(new MessageOptions { Prompt = prompt }, deadline.Token);
+            return await _collector.Completion.WaitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new TimeoutException("Judge session exceeded the five-minute response timeout.");
+        }
     }
 
-    /// <inheritdoc />
-    public ValueTask DisposeAsync() => _session.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await session.DisposeAsync();
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
 }

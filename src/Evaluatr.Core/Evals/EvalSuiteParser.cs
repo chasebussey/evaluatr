@@ -12,7 +12,7 @@ public static class EvalSuiteParser
         .WithDuplicateKeyChecking()
         .Build();
 
-    /// <summary>Parses YAML and validates assertion configuration.</summary>
+    /// <summary>Parses YAML and validates grader configuration.</summary>
     public static EvalSuite Parse(string yaml)
     {
         var definition = Deserializer.Deserialize<SuiteDefinition>(yaml)
@@ -49,15 +49,32 @@ public static class EvalSuiteParser
                 $"Grader '{name}': legacy 'assertion:' is no longer supported. Replace it with 'check:' and check-specific fields (path, text, or tool).");
         }
 
+        if (definition.HasLegacyRubric)
+        {
+            throw new EvalSuiteValidationException(
+                $"Grader '{name}': legacy 'rubric:' is no longer supported. Replace it with 'criteria:' entries (id, description, weight) and a required 'passThreshold:'.");
+        }
+
         if (definition.Type == "rubric")
         {
             RejectFields(definition, "check", "path", "text", "tool", "required");
-            return new RubricGrader
+            var rubric = new RubricGrader
             {
                 Name = name,
                 Description = definition.Description,
-                Rubric = Required(definition.Rubric, "rubric"),
+                Provider = definition.Provider,
+                Model = definition.Model,
+                PassThreshold = definition.PassThreshold
+                    ?? throw new EvalSuiteValidationException($"Rubric '{name}' must specify 'passThreshold'."),
+                Criteria = (definition.Criteria ?? []).Select(criterion => new RubricCriterion
+                {
+                    Id = Required(criterion.Id, "criterion id"),
+                    Description = Required(criterion.Description, "criterion description"),
+                    Weight = criterion.Weight ?? 1,
+                }).ToArray(),
             };
+            rubric.Validate();
+            return rubric;
         }
 
         if (definition.Type != "assertion")
@@ -65,7 +82,7 @@ public static class EvalSuiteParser
             throw new EvalSuiteValidationException($"Grader '{name}' has unknown type '{definition.Type}'.");
         }
 
-        RejectFields(definition, "rubric");
+        RejectFields(definition, "criteria", "passThreshold", "provider", "model");
         AssertionCheck check;
         switch (definition.Check)
         {
@@ -119,7 +136,10 @@ public static class EvalSuiteParser
                 "path" => definition.Path is not null,
                 "text" => definition.Text is not null,
                 "tool" => definition.Tool is not null,
-                "rubric" => definition.Rubric is not null,
+                "criteria" => definition.Criteria is not null,
+                "passThreshold" => definition.PassThreshold is not null,
+                "provider" => definition.Provider is not null,
+                "model" => definition.Model is not null,
                 "required" => definition.Required is not null,
                 _ => throw new InvalidOperationException($"Unknown schema field: {field}"),
             };
@@ -170,6 +190,25 @@ public static class EvalSuiteParser
         public string? Path { get; set; }
         public string? Text { get; set; }
         public string? Tool { get; set; }
-        public string? Rubric { get; set; }
+        [YamlIgnore]
+        public bool HasLegacyRubric { get; private set; }
+
+        public string? Rubric
+        {
+            get => null;
+            set => HasLegacyRubric = true;
+        }
+
+        public string? Provider { get; set; }
+        public string? Model { get; set; }
+        public decimal? PassThreshold { get; set; }
+        public List<CriterionDefinition>? Criteria { get; set; }
+    }
+
+    private sealed class CriterionDefinition
+    {
+        public string? Id { get; set; }
+        public string? Description { get; set; }
+        public decimal? Weight { get; set; }
     }
 }

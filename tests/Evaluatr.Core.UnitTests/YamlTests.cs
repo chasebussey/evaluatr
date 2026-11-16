@@ -47,6 +47,10 @@ public class YamlTests
         rubricGrader.Name.Should().Be("rubric checker");
         rubricGrader.Description.Should().BeNull();
         rubricGrader.Type.Should().Be(GraderType.Rubric);
-        rubricGrader.Rubric.Should().Be("Verify the output yadda yadda");
+        rubricGrader.PassThreshold.Should().Be(0.8m);
+        var criterion = rubricGrader.Criteria.Should().ContainSingle().Subject;
+        criterion.Id.Should().Be("quality");
+        criterion.Description.Should().Be("Verify the output yadda yadda");
+        criterion.Weight.Should().Be(2m);
     }
 }

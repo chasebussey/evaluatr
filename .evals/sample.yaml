@@ -16,4 +16,8 @@ evals:
         text: "sample assertion"
       - name: "rubric checker"
         type: "rubric"
-        rubric: "Verify the output yadda yadda"
+        passThreshold: 0.8
+        criteria:
+          - id: quality
+            description: "Verify the output yadda yadda"
+            weight: 2

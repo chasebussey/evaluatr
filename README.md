@@ -1,7 +1,7 @@
 # Evaluatr
 
 > [!WARNING]
-> Early alpha: deterministic assertion grading is implemented, but rubric grading is not. Rubric graders report ERROR until implemented.
+> Early alpha: assertion and rubric grading are implemented, but authenticated end-to-end execution and judge restrictions still need live-runtime validation.
 
 Evaluatr is a .NET CLI tool for running evaluation suites against agentic developer tooling (preliminary focus on GitHub Copilot). This tool is intended to help teams
 understand how changes to their outer harness impact real-world performance on engineering tasks.
@@ -17,11 +17,12 @@ Evaluatr loads YAML eval suites and drives GitHub Copilot through its SDK. Curre
 - Sequential eval execution across three workspace modes: remote repository, local commit, and live workspace
 - Copilot prompt execution, optional named-agent selection, transcript and tool-call collection, and token accounting
 - Deterministic file, transcript, and tool-call assertions, with optional required-check gating
-- Console reports containing execution status, grading verdict, individual outcomes, and token usage
+- Weighted, multi-criterion rubric grading through provider-neutral judge sessions (Copilot is the first adapter)
+- Console reports containing execution status, grading verdict, criterion scores/explanations, and token usage
 
-Rubric session infrastructure exists, but rubric evaluation remains unimplemented. There is no persisted or machine-readable report output.
+There is no persisted or machine-readable report output.
 
-Unit tests cover parsing, validation, assertion grading, grading policy, tool-event collection, CLI behavior, and Git workspace handling. They do not verify a successful authenticated Copilot run.
+Unit tests cover parsing, validation, assertion/rubric grading, grading policy, provider routing, adapter restrictions, tool-event collection, CLI behavior, and Git workspace handling. They do not verify a successful authenticated Copilot task/judge run or actual runtime enforcement of adapter restrictions.
 
 ---
 
@@ -33,7 +34,7 @@ Unit tests cover parsing, validation, assertion grading, grading policy, tool-ev
 - Git for repository cloning and workspace operations
 - GitHub Copilot access and authentication available to the Copilot CLI used by the SDK
 
-Copilot tool-use permission requests are automatically approved. Only run trusted prompts and repositories; a temporary clone or worktree is not a security sandbox.
+Task-execution sessions automatically approve Copilot tool-use permissions. Judge sessions instead expose only controlled workspace inspection tools. Only run trusted prompts and repositories; neither temporary checkouts nor adapter-level restrictions are an OS sandbox.
 
 ### Build
 
@@ -113,7 +114,10 @@ evals:
         required: true
       - name: "quality check"
         type: "rubric"
-        rubric: "The output should be clear and well-structured."
+        passThreshold: 0.8
+        criteria:
+          - id: clarity
+            description: "The output is clear and well-structured."
 ```
 
 ### Assertion Checks
@@ -155,6 +159,51 @@ File paths use `/` separators and must be workspace-relative. Absolute paths and
 
 **Breaking schema change:** free-form `assertion:` is no longer supported. Replace it with `check:` and the applicable `path`, `text`, or `tool` fields; legacy definitions are rejected with a migration message.
 
+### Rubric Grading
+
+Each rubric grader evaluates multiple weighted criteria in one fresh judge session:
+
+```yaml
+graders:
+  - name: implementation quality
+    type: rubric
+    provider: copilot       # optional; defaults to the suite's harness
+    model: gpt-4.1          # optional; defaults to the selected provider's judge model
+    passThreshold: 0.8     # required, inclusive, between 0 and 1
+    criteria:
+      - id: correctness
+        description: |
+          The implementation satisfies the task requirements
+          and handles relevant edge cases.
+        weight: 3
+      - id: test-coverage
+        description: Tests cover expected behavior and meaningful failure cases.
+        weight: 2
+      - id: maintainability
+        description: Code is readable and consistent with repository conventions.
+        # weight defaults to 1
+```
+
+Criterion IDs must be nonblank and unique (case-sensitive); descriptions must be nonblank. Weights are positive decimals. Core accumulates weighted products exactly (avoiding tiny-weight underflow and large-total overflow), rounds the normalized result once to decimal precision, then computes the verdict. The formula is **Σ(weight × score) / Σ(weights)**; the aggregate is compared directly with `passThreshold`, without display rounding. For example, scores of `0.9` and `0.6` with weights `3` and `1` produce `0.825`.
+
+The judge receives the original task prompt, assistant transcript, criterion descriptions, and inspection access to the resulting workspace. It returns a **0–1 score and evidence-based explanation for every criterion**, not an aggregate or pass/fail decision. Core rejects malformed JSON, extra/missing/duplicate IDs or properties, invalid scores, and blank explanations. An invalid response produces ERROR with no aggregate or partial criterion results. Known judge token usage is retained on errors.
+
+Provider/model overrides are per rubric and independent of task execution. Currently only `copilot` is registered; its judge default is `gpt-4o`. Unknown providers and adapters unable to enforce inspection-only access are rejected before agent execution. Model errors are reported during judge creation/execution; explicit selections never trigger an application-level fallback. Embedded callers supply the provider-neutral session factory through `EvalRunOptions.CreateGraderSessionAsync`.
+
+The Copilot adapter uses restricted SDK mode with fresh conversations, an explicit tool allowlist, and deny-by-default permission/tool hooks. Discovered configuration, repository instructions/hooks, skills, plugins, subagent tools, MCP tools, and cross-session context are not enabled for judges. The adapter retains the provider's normal auth data location (`COPILOT_HOME` or `~/.copilot`); credentials remain provider-owned.
+
+Judges can only use these controlled tools:
+
+- `evaluatr_read_file`: UTF-8 ranges of at most 16,000 characters, with offsets up to 1,000,000 characters.
+- `evaluatr_list_directory`: at most 200 immediate entry names.
+- `evaluatr_search_file`: literal, case-sensitive search in one UTF-8 file of at most 256 KiB, returning up to 100 match line numbers.
+
+Paths and symbolic-link targets are confined to the eval workspace using the same boundary as file assertions. Judges cannot edit artifacts, run shell commands or tests, delegate to subagents, or access arbitrary external tools. This is not an OS sandbox or protection against concurrent filesystem replacement. Task/transcript/workspace content is treated as untrusted evidence, not judge instructions.
+
+There are no automatic grading retries or response-repair calls. Copilot judge response waits time out after five minutes and report ERROR; caller cancellation propagates and stops the run. Judge response messages are limited to 128 Ki characters. Every rubric's session/client is disposed, including on invalid responses and provider errors.
+
+**Breaking schema change:** legacy free-form `rubric:` is rejected with migration guidance. Move its prose into one or more `criteria` descriptions and explicitly choose `passThreshold`.
+
 ### Grading Policy and Reports
 
 Assertions report **PASS**, **FAIL** (evaluated but did not match), or **ERROR** (could not evaluate), with explanations and no numeric scores. Rubric results have a separate optional score.
@@ -167,7 +216,7 @@ Assertions report **PASS**, **FAIL** (evaluated but did not match), or **ERROR**
 
 A required assertion FAIL or ERROR fails the eval and short-circuits grading. All remaining graders report SKIPPED and name the blocking assertion. The next eval still runs. Cancellation stops execution rather than becoming a grading error.
 
-Execution status (`Completed`) is separate from the grading verdict (`PASS`, `FAIL`, or `ERROR`). A required assertion failure/error or rubric failure gives FAIL; a rubric error gives ERROR. With no blocking checks, the verdict is PASS—even if optional assertions failed or there are no graders. This is not proof of task correctness. Unimplemented rubric graders currently report ERROR, never a placeholder PASS.
+Execution status (`Completed`) is separate from the grading verdict (`PASS`, `FAIL`, or `ERROR`). A required assertion failure/error or rubric failure gives FAIL; any rubric error gives ERROR. Rubric FAIL/ERROR does not skip later rubrics. With no blocking checks, the verdict is PASS—even if optional assertions failed or there are no graders. This is not proof of task correctness.
 
 The CLI runs subsequent evals after grading failures/errors and exits nonzero if any eval's verdict is FAIL or ERROR. Invalid suite configuration is rejected before agent execution. Harness authentication fail-fast/circuit breaking is a follow-up, not part of grading policy.
 

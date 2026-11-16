@@ -57,8 +57,11 @@ public sealed record GradingContext
     /// <summary>The workspace in which the eval ran.</summary>
     public required string WorkingDirectory { get; init; }
 
-    /// <summary>Creates an isolated harness session for rubric grading.</summary>
-    public Func<CancellationToken, Task<IGraderSession>>? CreateGraderSessionAsync { get; init; }
+    /// <summary>The original task prompt supplied to the executing agent.</summary>
+    public required string TaskPrompt { get; init; }
+
+    /// <summary>Creates an inspection-only session using the selected provider and model.</summary>
+    public Func<GraderSessionOptions, CancellationToken, Task<IGraderSession>>? CreateGraderSessionAsync { get; init; }
 }
 
 /// <summary>A grader's outcome and diagnostic explanation. Assertions have no score.</summary>
@@ -82,6 +85,12 @@ public sealed record RubricGradeResult : GradeResult
 {
     /// <summary>The rubric score, absent when it could not be evaluated.</summary>
     public decimal? Score { get; init; }
+
+    /// <summary>The configured inclusive passing threshold.</summary>
+    public decimal? PassThreshold { get; init; }
+
+    /// <summary>Validated criterion results in configuration order; empty on error.</summary>
+    public IReadOnlyList<RubricCriterionResult> Criteria { get; init; } = [];
 }
 
 /// <summary>A single deterministic check, optionally gating further grading.</summary>
@@ -116,34 +125,5 @@ public sealed class AssertionGrader : IGrader
         {
             return new GradeResult { Name = Name, Outcome = GradeOutcome.Error, Detail = ex.Message };
         }
-    }
-}
-
-/// <summary>An LLM rubric definition. Rubric evaluation is not implemented yet.</summary>
-public sealed class RubricGrader : IGrader
-{
-    /// <inheritdoc />
-    public required string Name { get; init; }
-
-    /// <inheritdoc />
-    public string? Description { get; init; }
-
-    /// <inheritdoc />
-    public GraderType Type => GraderType.Rubric;
-
-    /// <summary>The rubric to apply.</summary>
-    public required string Rubric { get; init; }
-
-    /// <inheritdoc />
-    public Task<GradeResult> GradeAsync(GradingContext context, CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        return Task.FromResult<GradeResult>(new RubricGradeResult
-        {
-            Name = Name,
-            Outcome = GradeOutcome.Error,
-            Detail = "Rubric grading is not implemented.",
-        });
     }
 }
